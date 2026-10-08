@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+	<!-- Import tModLoader mod properties. In ModSources/ that is ..\tModLoader.targets, which tModLoader
+	     writes (when Develop Mods opens, or on -build) to point at its install. Built from anywhere else:
+	       dotnet build -p:TmlInstallDir=<folder with tModLoader.dll and tMLMod.targets>
+	     (not "TMLPath": tMLMod.targets already uses tMLPath, and MSBuild property names ignore case).
+	     Keep the first line as it is: tModLoader looks for exactly that Import (Project= first), and
+	     offers to "upgrade" the csproj without it. -->
+	<Import Project="..\tModLoader.targets" Condition="'$(TmlInstallDir)' == ''" />
+	<Import Project="$(TmlInstallDir)/tMLMod.targets" Condition="'$(TmlInstallDir)' != ''" />
+
+</Project>

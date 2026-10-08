@@ -1,0 +1,4 @@
+displayName = Seed Arsenal
+author = Fixed Seed
+version = 0.1
+side = Both

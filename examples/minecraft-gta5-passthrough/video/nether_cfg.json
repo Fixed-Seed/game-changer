@@ -1,0 +1,14 @@
+{"origin": "absolute", "h_in": 90, "steps": [
+  ["time", 17, 30], ["weather", "EXTRASUNNY"],
+  ["netheroff"], ["gta", "hell", {"on": 0}],
+  ["gta", "copsclear", {}], ["mobsclear"],
+  ["cmd", "item replace entity @a hotbar.7 with minecraft:obsidian 64"],
+  ["teleport", [102.0, -1929.5, 21.0]],
+  ["view", 1],
+  ["gta", "look", {"heading": 0, "pitch": -2}],
+  ["wait", 6.0],
+  ["mark", "portal"],
+  ["portal", 10],
+  ["wait", 50.0],
+  ["mark", "end"]
+]}

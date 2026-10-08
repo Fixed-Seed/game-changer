@@ -1,0 +1,7 @@
+{
+	"required": true,
+	"package": "com.fixedseed.passthrough.client.mixin",
+	"compatibilityLevel": "JAVA_25",
+	"client": ["AbstractClientPlayerMixin", "AvatarRendererMixin", "CameraMixin", "ClientLevelMixin", "EntityPickMixin", "LivingEntityMixin", "FogRendererMixin", "GameRendererMixin", "GlCommandEncoderMixin", "KeyMappingAccessor", "LocalPlayerMixin", "ToastManagerMixin"],
+	"injectors": { "defaultRequire": 1 }
+}

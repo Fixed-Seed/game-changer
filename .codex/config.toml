@@ -1,0 +1,6 @@
+# Codex: project-scoped MCP (trusted projects). The FixedSeed MCP server runs locally over stdio (`fsgc fixedseed mcp`)
+# and passes $FIXEDSEED_KEY through to it.
+[mcp_servers.fixedseed]
+command = "./bin/fsgc"
+args = ["fixedseed", "mcp"]
+env_vars = ["FIXEDSEED_KEY", "FIXEDSEED_API"]

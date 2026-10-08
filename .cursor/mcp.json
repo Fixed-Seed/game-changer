@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "fixedseed": {
+      "type": "stdio",
+      "command": "${workspaceFolder}/bin/fsgc",
+      "args": ["fixedseed", "mcp"],
+      "env": { "FIXEDSEED_KEY": "${env:FIXEDSEED_KEY}" }
+    }
+  }
+}

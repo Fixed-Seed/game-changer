@@ -1,0 +1,22 @@
+[project]
+name = "game-changer"
+version = "0.2.0"
+description = "Tools and a shared knowledge base for AI agents that mod games: engine scanner, FixedSeed asset generation, sprite and 3D-to-sprite pipelines, window capture and input on Windows, showcase video editing, field notes."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+dependencies = [
+    "pillow>=10",
+    "numpy>=1.24",
+    "pyyaml>=6",
+]
+
+[project.scripts]
+fsgc = "game_changer.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["game_changer"]

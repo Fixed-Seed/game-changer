@@ -1,0 +1,16 @@
+{
+  "$schema": "https://code.claude.com/schemas/marketplace.json",
+  "name": "game-changer",
+  "description": "Skills, tools, the FixedSeed MCP and a shared knowledge base for modding games with AI agents.",
+  "owner": {
+    "name": "Fixed Seed",
+    "url": "https://fixedseed.com"
+  },
+  "plugins": [
+    {
+      "name": "game-changer",
+      "source": "./",
+      "description": "Mod almost any game you own with an AI agent: engine recon, reverse engineering, FixedSeed-generated art/3D/audio, in-game testing, showcase videos, and a shared knowledge base of how games were modded."
+    }
+  ]
+}

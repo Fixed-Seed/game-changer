@@ -1,0 +1,33 @@
+{
+	"schemaVersion": 1,
+	"id": "passthrough",
+	"version": "${version}",
+	"name": "Passthrough",
+	"description": "Runs alongside another game: its camera drives Minecraft's, its collision becomes invisible blocks, and Minecraft's picture (colour + depth) is handed back to be composited into the host game.",
+	"authors": [
+		"Fixed Seed"
+	],
+	"license": "MIT",
+	"environment": "*",
+	"entrypoints": {
+		"main": [
+			"com.fixedseed.passthrough.Passthrough"
+		],
+		"client": [
+			"com.fixedseed.passthrough.client.PassthroughClient"
+		]
+	},
+	"mixins": [
+		"passthrough.mixins.json",
+		{
+			"config": "passthrough.client.mixins.json",
+			"environment": "client"
+		}
+	],
+	"depends": {
+		"fabricloader": ">=0.19.5",
+		"minecraft": "~26.3",
+		"java": ">=25",
+		"fabric-api": "*"
+	}
+}

@@ -1,0 +1,7 @@
+Weapons, enemies and a boss that aren't in vanilla Terraria, with sprites generated with FixedSeed (FLUX.1 dev).
+
+Weapons: Homing Missile Launcher, Tactical Nuke, Tesla Rifle, Singularity Launcher, Orbital Strike.
+Enemies: Scrap Drone, Neon Slime, Mech Walker (surface). Boss: Drone Mothership.
+
+Type /arsenal in chat for the weapons (or craft them at an anvil) and /mothership to summon the boss.
+Explosions dig into the world: try it in a spare world.

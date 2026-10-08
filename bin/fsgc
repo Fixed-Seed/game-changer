@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# game-changer CLI launcher (`fsgc`). Works from a clone, a Claude Code plugin install, or a PATH symlink.
+#   fsgc scan --list | fsgc fixedseed sprite "..." | fsgc sprite cutout in.png out.png | fsgc video compile edl.json out.mp4 ...
+# Uses uv when available (it creates the project's .venv with Pillow + numpy on first run);
+# otherwise the system python3, which then needs `pip install pillow numpy`.
+set -euo pipefail
+SRC="${BASH_SOURCE[0]}"
+while [ -L "$SRC" ]; do
+  DIR="$(cd -P "$(dirname "$SRC")" && pwd)"
+  SRC="$(readlink "$SRC")"
+  [[ "$SRC" != /* ]] && SRC="$DIR/$SRC"
+done
+ROOT="$(cd -P "$(dirname "$SRC")/.." && pwd)"
+if command -v uv >/dev/null 2>&1 && [ -z "${FSGC_NO_UV:-}" ]; then
+  exec uv run --quiet --project "$ROOT" python -m game_changer "$@"
+fi
+PY="$(command -v python3 || command -v python)"
+PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}" exec "$PY" -m game_changer "$@"

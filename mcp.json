@@ -1,0 +1,10 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "fixedseed": {
+      "type": "stdio",
+      "command": "./bin/fsgc",
+      "args": ["fixedseed", "mcp"]
+    }
+  }
+}

@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.pyc
+uv.lock
+.env
+build/
+dist/
+*.egg-info/
+# captures and scratch
+*.mkv
+*.audio.raw
+/scratch/
+.pytest_cache/
+# the parent repo ignores bin/ (build output); the CLI launcher lives here
+!bin/

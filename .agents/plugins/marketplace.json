@@ -1,0 +1,20 @@
+{
+  "name": "game-changer",
+  "interface": {
+    "displayName": "game-changer"
+  },
+  "plugins": [
+    {
+      "name": "game-changer",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/Fixed-Seed/game-changer.git"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}

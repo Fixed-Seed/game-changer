@@ -1,0 +1,26 @@
+{
+  "name": "game-changer",
+  "version": "0.2.0",
+  "description": "Mod almost any game you own with an AI agent: engine recon, reverse engineering, FixedSeed-generated art/3D/audio, in-game testing, showcase videos, and a shared knowledge base of how games were modded.",
+  "contextFileName": "AGENTS.md",
+  "mcpServers": {
+    "fixedseed": {
+      "command": "${extensionPath}/bin/fsgc",
+      "args": [
+        "fixedseed",
+        "mcp"
+      ],
+      "env": {
+        "FIXEDSEED_KEY": "$FIXEDSEED_KEY"
+      }
+    }
+  },
+  "settings": [
+    {
+      "name": "FixedSeed API key",
+      "description": "Key for FixedSeed (https://fixedseed.com/developers/keys): assets via the MCP server and `fsgc fixedseed`.",
+      "envVar": "FIXEDSEED_KEY",
+      "sensitive": true
+    }
+  ]
+}

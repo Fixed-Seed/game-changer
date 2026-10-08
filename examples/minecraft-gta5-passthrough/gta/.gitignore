@@ -1,0 +1,5 @@
+build/
+tests/*.exe
+tests/*.obj
+# fetched by fetch_deps.sh: ScriptHookV (may not be redistributed), ReShade's headers and runtime
+third_party/

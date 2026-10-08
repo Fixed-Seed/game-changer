@@ -1,0 +1,4 @@
+# dotnet build output inside the mod folder
+bin/
+obj/
+*.user

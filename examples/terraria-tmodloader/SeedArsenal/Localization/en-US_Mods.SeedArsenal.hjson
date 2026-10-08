@@ -1,0 +1,52 @@
+# tModLoader adds entries here for new content after a build and reload (see its Localization wiki page).
+
+Items: {
+	HomingMissileLauncher: {
+		DisplayName: Homing Missile Launcher
+		Tooltip: Missiles home in on the nearest enemy and blow small craters
+	}
+
+	TacticalNuke: {
+		DisplayName: Tactical Nuke
+		Tooltip:
+			'''
+			Calls a warhead down 60 tiles in front of you
+			Nothing near ground zero survives, and it leaves a crater
+			'''
+	}
+
+	TeslaRifle: {
+		DisplayName: Tesla Rifle
+		Tooltip: Lightning jumps from the target to up to four more enemies
+	}
+
+	SingularityLauncher: {
+		DisplayName: Singularity Launcher
+		Tooltip: Fires a black hole that pulls enemies and loot in, grinds them, then implodes
+	}
+
+	OrbitalStrike: {
+		DisplayName: Orbital Strike
+		Tooltip:
+			'''
+			Locks on near the cursor (bosses first), then a beam from orbit sweeps onto the target
+			It burns everything under it, and the Drone Mothership can't escape it
+			'''
+	}
+}
+
+NPCs: {
+	ScrapDrone.DisplayName: Scrap Drone
+	NeonSlime.DisplayName: Neon Slime
+	MechWalker.DisplayName: Mech Walker
+	DroneMothership.DisplayName: Drone Mothership
+}
+
+Projectiles: {
+	HomingMissile.DisplayName: Homing Missile
+	NukeWarhead.DisplayName: Nuke Warhead
+	TeslaArc.DisplayName: Tesla Arc
+	SingularityOrb.DisplayName: Singularity
+	OrbitalBeam.DisplayName: Orbital Beam
+	HostileRocket.DisplayName: Mothership Rocket
+}
