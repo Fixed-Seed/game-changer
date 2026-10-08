@@ -47,6 +47,8 @@ repo, they almost always want to **mod a game**, or to learn how a game was modd
   - Never write cheats against other players (aimbots, ESP, speed hacks).
   - Never bypass anti-cheat, DRM or ownership checks.
 - **Saves:** `fsgc backup` saves before modded launches.
+- **Spending:** price a plan first (`fsgc fixedseed estimate`, MCP `estimate`) and tell the user the range;
+  ask before spending more than about $5. Suggest a separate, spend-limited FixedSeed key for the agent.
 - **What you ship:** never commit or publish game files, extracted assets or decompiled code. Keep
   decompiles outside the repo.
 - **Processes:** kill by exact PID (`fsgc win kill`), never by name pattern.

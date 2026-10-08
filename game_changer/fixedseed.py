@@ -1,6 +1,8 @@
 """Game assets from the FixedSeed API (https://fixedseed.com): plain REST, no SDK needed. Needs FIXEDSEED_KEY (env or a .env file).
 
     fsgc fixedseed sprite "a rusty scrap drone enemy, side view facing left, 16-bit pixel art" --out assets/gen --name drone
+    fsgc fixedseed item "a copper shortsword with a leather grip"   # true pixel-art item: grid, palette, outline (Terraria 2x)
+    fsgc fixedseed block "mossy cobblestone" --namespace mymod      # 16 px seamless block textures + Minecraft model files
     fsgc fixedseed image "key art: ..." --aspect 16:9
     fsgc fixedseed edit "same drone, rotors blurred, second animation frame" --ref assets/gen/drone.png
     fsgc fixedseed rmbg in.png                       # background removal with soft matting (BiRefNet v2)
@@ -22,10 +24,14 @@
     fsgc fixedseed run <model> key=value key:=json image_url=@local.png   # any of the catalog's models
     fsgc fixedseed search "image to 3d" | fsgc fixedseed schema tencent/hunyuan3d-3.1 | fsgc fixedseed price tencent/hunyuan3d-3.1
     fsgc fixedseed balance                           # API wallet
+    fsgc fixedseed estimate fixedseed/item-sprite:10 tencent/hunyuan3d-3.1:2   # what a plan costs, before spending
+    fsgc fixedseed batch plan.json --max-cents 300   # many requests at once with a spend cap; re-running resumes
     fsgc fixedseed mcp                               # stdio MCP server with the same tools (see game_changer/fixedseed_mcp.py)
 
 `fsgc fs ...` is the same command. Every call appends a line to <out>/fixedseed_manifest.jsonl (model, inputs,
-request id, files) so an asset can be traced and regenerated. Local files passed as inputs are uploaded through
+request id, files) so an asset can be traced and regenerated, and a result never replaces an earlier file. Batches
+(and the MCP's generate) also keep <out>/.fixedseed_ledger.jsonl: asking again for the same model, input and name
+within an hour collects the earlier request instead of paying for a new one. Local files passed as inputs are uploaded through
 /v1/files first. Multi-file results (rigs, PBR sets, motion, SVG, alpha video) arrive as a ZIP and are unpacked
 into <out>/<name>/. The catalog changes: `fsgc fixedseed search` (or the MCP's search_models) lists what is live.
 Base URL: FIXEDSEED_API (default https://run.fixedseed.com). Keys: https://fixedseed.com/developers/keys.
@@ -69,6 +75,8 @@ MODELS = {
     "voice_clone": "bytedance/seed-audio-1.0",
     "video": "bytedance/seedance-2.5-i2v",
     "video-rmbg": "pixelcut/video-background-removal",
+    "item": "fixedseed/item-sprite",
+    "block": "fixedseed/block-texture",
 }
 MODEL3D = {"trellis": "microsoft/trellis-2", "hunyuan": "tencent/hunyuan3d-3.1",
            "tripo": "tripo/h3.1-image-to-3d", "meshy": "meshy/v7.1-image-to-3d"}
@@ -102,9 +110,11 @@ def fixedseed_key() -> str:
     return k
 
 
-def _req(method: str, path: str, body=None, headers=None, auth=True, raw=False, timeout=120, ok=(200, 201, 202)):
+def _req(method: str, path: str, body=None, headers=None, auth=True, raw=False, timeout=120, ok=(200, 201, 202),
+         busy_ok=False):
     """JSON request against the API (path like /v1/models) or an absolute URL. Retries 429/5xx; POSTs carry an
-    Idempotency-Key from the caller, so a retried submit never queues (or charges) twice."""
+    Idempotency-Key from the caller, so a retried submit never queues (or charges) twice. busy_ok: return None at
+    once when the account already has its plan's limit of simultaneous requests (429 too_many_active_requests)."""
     url = path if path.startswith("http") else api_base() + path
     h = {"Accept": "application/json", "User-Agent": "game-changer", **(headers or {})}
     if auth:
@@ -121,6 +131,8 @@ def _req(method: str, path: str, body=None, headers=None, auth=True, raw=False, 
                 return payload if raw else (json.loads(payload) if payload else {})
         except urllib.error.HTTPError as e:
             detail = e.read().decode(errors="replace")[:1500]
+            if busy_ok and e.code == 429 and "too_many_active_requests" in detail:
+                return None
             if e.code in (429, 500, 502, 503, 504) and attempt < 3:
                 wait = e.headers.get("Retry-After")
                 time.sleep(float(wait) if wait and wait.isdigit() else 2 * (attempt + 1))
@@ -194,21 +206,42 @@ EXT = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "image/
 
 
 def _unpack(zip_path: Path, dest: Path) -> list[str]:
-    """Multi-file results (rigs, PBR sets, motion clips, SVG, alpha video) arrive as one ZIP: unpack it into dest/."""
+    """Multi-file results (rigs, PBR sets, motion clips, SVG, block textures with their assets/ tree) arrive as one
+    ZIP: unpack it into dest/, keeping its folders. A member that would land outside dest is skipped."""
     import zipfile
+    from pathlib import PurePosixPath
 
     dest.mkdir(parents=True, exist_ok=True)
+    root = dest.resolve()
     files = []
     with zipfile.ZipFile(zip_path) as z:
         for member in z.infolist():
-            name = Path(member.filename).name  # flat archives; never write outside dest
-            if member.is_dir() or not name:
+            raw = member.filename.replace("\\", "/")
+            parts = [part for part in PurePosixPath(raw).parts if part not in ("", ".")]
+            if member.is_dir() or not parts or raw.startswith("/") or any(part == ".." or ":" in part for part in parts):
                 continue
-            target = dest / name
+            target = dest.joinpath(*parts)
+            if not target.resolve().is_relative_to(root):
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(z.read(member))
             files.append(str(target))
     zip_path.unlink()
     return files
+
+
+def _fetch(url: str, path: Path) -> None:
+    """Download a result file, retrying network failures (the job is already paid for)."""
+    for attempt in range(4):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "game-changer"})
+            with urllib.request.urlopen(req, timeout=600) as r:
+                path.write_bytes(r.read())
+            return
+        except (urllib.error.URLError, TimeoutError, ConnectionError):
+            if attempt == 3:
+                raise
+            time.sleep(2 * (attempt + 1))
 
 
 def download_outputs(result, out: Path, name: str) -> list[str]:
@@ -224,15 +257,15 @@ def download_outputs(result, out: Path, name: str) -> list[str]:
             stem = name if not idx or idx[-1] == "0" else f"{name}_{int(idx[-1]) + 1}"
         else:
             stem = f"{name}_{key}" + (f"_{int(idx[-1]) + 1}" if idx and idx[-1] != "0" else "")
-        path = out / f"{stem}{ext}"
-        n = 1
-        while path.name in used:
+        # Never replace an earlier result (it was paid for): take the next free name, file and archive folder alike.
+        base, n = stem, 1
+        while (f"{stem}{ext}" in used or (out / f"{stem}{ext}").exists()
+               or (key == "archive" and (out / stem).exists())):
             n += 1
-            path = out / f"{stem}_{n}{ext}"
+            stem = f"{base}_{n}"
+        path = out / f"{stem}{ext}"
         used.add(path.name)
-        req = urllib.request.Request(url, headers={"User-Agent": "game-changer"})
-        with urllib.request.urlopen(req, timeout=600) as r:
-            path.write_bytes(r.read())
+        _fetch(url, path)
         if path.suffix == ".zip" and key == "archive":
             files += _unpack(path, out / stem)
         else:
@@ -243,8 +276,10 @@ def download_outputs(result, out: Path, name: str) -> list[str]:
 # --------------------------------------------------------------------------- queue
 
 
-def submit(model: str, inp: dict, idempotency_key: str | None = None) -> dict:
-    return _req("POST", f"/v1/queue/{model}", inp, headers={"Idempotency-Key": idempotency_key or str(uuid.uuid4())})
+def submit(model: str, inp: dict, idempotency_key: str | None = None, busy_ok: bool = False) -> dict | None:
+    """Queue a request. With busy_ok, None means the account is at its plan's limit of simultaneous requests."""
+    return _req("POST", f"/v1/queue/{model}", inp, headers={"Idempotency-Key": idempotency_key or str(uuid.uuid4())},
+                busy_ok=busy_ok)
 
 
 def result(request_id: str) -> dict | None:
@@ -299,11 +334,168 @@ def generate(model: str, inp: dict, out: str | Path, name: str, quiet=False) -> 
     """run + download every output file + manifest line. Returns {'files': [...], 'request_id': ..., 'output': ...}."""
     inp = resolve_inputs(inp)
     res = run(model, inp, quiet=quiet)
-    files = save(res, model, inp, out, name)
+    try:
+        files = save(res, model, inp, out, name)
+    except Exception as e:  # noqa: BLE001 - the request succeeded and is paid for: say how to collect it
+        rid = res.get("request_id")
+        die(f"{model} finished (request {rid}) but its files didn't download: {e}. Fetch them with "
+            f"`fsgc fixedseed result {rid} --out {out}`; don't generate again")
     if not quiet:
         for p in files:
             print(p)
     return dict(files=files, request_id=res.get("request_id"), output=res.get("output"))
+
+
+# --------------------------------------------------------------------------- batches, and retries that never pay twice
+
+LEDGER = ".fixedseed_ledger.jsonl"
+REUSE_SECONDS = 3600   # an identical request made within this long is collected, not paid for again
+
+
+def item_key(model: str, inp: dict, name: str) -> str:
+    """A request's identity in the ledger: model, input as given (local paths, not upload URLs) and output name."""
+    import hashlib
+
+    return hashlib.sha256(json.dumps([model, inp, name], sort_keys=True, default=str).encode()).hexdigest()[:20]
+
+
+def ledger(out: str | Path) -> dict:
+    """Latest state of every request recorded in out/ (append-only JSON lines; later lines update earlier ones)."""
+    entries: dict[str, dict] = {}
+    path = Path(out) / LEDGER
+    if path.exists():
+        for line in path.read_text(encoding="utf-8").splitlines():
+            try:
+                e = json.loads(line)
+                entries[e["key"]] = {**entries.get(e["key"], {}), **e}
+            except (ValueError, KeyError, TypeError):
+                continue
+    return entries
+
+
+def _ledger_add(out: Path, entry: dict) -> None:
+    out.mkdir(parents=True, exist_ok=True)
+    with open(out / LEDGER, "a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, default=str) + "\n")
+
+
+def plan_jobs(plan) -> list[dict]:
+    """A batch plan (a list, or {"jobs": [...]}) -> [{model, input, name}], each checked."""
+    jobs = plan.get("jobs") if isinstance(plan, dict) else plan
+    if not isinstance(jobs, list) or not jobs:
+        die('a batch plan is a list of jobs: [{"model": "...", "input": {...}, "name": "..."}]')
+    out, names = [], set()
+    for i, j in enumerate(jobs):
+        if not isinstance(j, dict) or not isinstance(j.get("model"), str) or not isinstance(j.get("input", {}), dict):
+            die(f"job {i + 1}: needs a model and an input object")
+        name = str(j.get("name") or f"{j['model'].split('/')[-1]}_{i + 1}")
+        if name in names:
+            die(f"job {i + 1}: the name {name!r} is used twice; give each job its own name")
+        names.add(name)
+        out.append(dict(model=j["model"], input=j.get("input") or {}, name=name))
+    return out
+
+
+def estimate(items: list[dict]) -> dict:
+    """The charge range of a plan from the public catalog: every model's starting charge (a typical job) and maximum
+    charge (the most one job can cost) times its count. Metered jobs are billed on what they measure, between the
+    two; a failed job costs nothing. items: [{"model": ..., "n": 1}]."""
+    rows, low, high = [], 0, 0
+    for it in items:
+        m = model_info(it["model"])
+        n = max(1, int(it.get("n") or 1))
+        pricing = m.get("pricing") or {}
+        start = int(pricing.get("starting_charge_cents") or 0)
+        most = int(pricing.get("maximum_charge_cents") or start)
+        rows.append(dict(model=it["model"], n=n, starting_cents=start * n, max_cents=most * n,
+                         unit=pricing.get("unit") or pricing.get("mode")))
+        low, high = low + start * n, high + most * n
+    return dict(items=rows, starting_cents=low, max_cents=high,
+                note="typical cost is near starting_cents; no job charges more than its maximum, and failed jobs are free")
+
+
+def batch(jobs: list[dict], out: str | Path, max_cents: int | None = None, timeout: float = 1800,
+          fresh: bool = False, quiet: bool = False) -> dict:
+    """Run several requests at once. Requests this out/ already holds from the last hour (same model, input and name)
+    are collected rather than paid for again, so a batch that timed out or crashed resumes when re-run; fresh=True
+    submits everything anew. New requests are priced first and refused if their maximum is over max_cents. Each is
+    recorded in the ledger before it is submitted, with the Idempotency-Key it is sent with, so even a crash between
+    the two never queues a second copy. -> {items: [...], pending: [request ids still running], estimate}."""
+    out = Path(out)
+    jobs = plan_jobs(jobs)
+    known, now = ({} if fresh else ledger(out)), time.time()
+    for j in jobs:
+        j["key"] = item_key(j["model"], j["input"], j["name"])
+        prev = known.get(j["key"])
+        j["prev"] = prev if prev and now - float(prev.get("submitted_at") or 0) < REUSE_SECONDS \
+            and prev.get("status") not in ("failed", "canceled") else None
+    new = [j for j in jobs if not j["prev"]]
+    est = estimate([{"model": j["model"]} for j in new]) if new else dict(items=[], starting_cents=0, max_cents=0)
+    if max_cents is not None and est["max_cents"] > max_cents:
+        what = "this new request" if len(new) == 1 else f"these {len(new)} new requests"
+        die(f"{what} could cost up to {est['max_cents']}¢ (typically about {est['starting_cents']}¢), over the "
+            f"{max_cents}¢ cap; raise the cap or plan fewer")
+    todo = []                                  # still to submit: new jobs, or ones a crash left mid-submit
+    for j in jobs:
+        prev = j["prev"]
+        if prev:
+            j.update(request_id=prev.get("request_id"), idempotency_key=prev.get("idempotency_key"),
+                     status=prev.get("status"), files=prev.get("files"), resolved=prev.get("input"))
+            if prev.get("request_id") or not prev.get("idempotency_key"):
+                continue                       # collected below (or already done)
+        else:
+            j["idempotency_key"] = str(uuid.uuid4())
+            _ledger_add(out, dict(key=j["key"], model=j["model"], name=j["name"], idempotency_key=j["idempotency_key"],
+                                  submitted_at=now, status="submitting"))
+        j["resolved"] = None
+        todo.append(j)
+    waiting = [j for j in jobs if j.get("request_id") and not (j.get("status") == "succeeded" and j.get("files"))]
+    deadline = time.time() + timeout
+    while True:
+        # Submit while the account has room: a plan allows only so many simultaneous requests (standard: 3), so the
+        # rest wait for one to finish rather than failing.
+        while todo:
+            j = todo[0]
+            if j["resolved"] is None:
+                j["resolved"] = resolve_inputs(j["input"])
+            job = submit(j["model"], j["resolved"], j["idempotency_key"], busy_ok=True)
+            if job is None:
+                break
+            todo.pop(0)
+            j.update(request_id=job["request_id"], status=job.get("status") or "queued")
+            _ledger_add(out, dict(key=j["key"], request_id=j["request_id"], status=j["status"], input=j["resolved"]))
+            waiting.append(j)
+            if not quiet:
+                print(f"  [{j['name']}] {j['model']} queued as {j['request_id']}", file=sys.stderr)
+        for j in list(waiting):
+            st = _req("GET", f"/v1/requests/{j['request_id']}")
+            j["status"] = st.get("status")
+            if j["status"] == "succeeded":
+                res = result(j["request_id"]) or {"request_id": j["request_id"], "output": st.get("output")}
+                try:
+                    j["files"] = save(res, j["model"], j.get("resolved"), out, j["name"])
+                except Exception as e:  # noqa: BLE001 - paid for: keep the request id so a re-run collects it
+                    j.update(status="download_failed", error=f"{e}")
+                    waiting.remove(j)
+                    continue
+                j["output"] = res.get("output")
+                _ledger_add(out, dict(key=j["key"], status="succeeded", files=j["files"]))
+                waiting.remove(j)
+            elif j["status"] in ("failed", "canceled"):
+                j["error"] = st.get("error") or "no detail"
+                _ledger_add(out, dict(key=j["key"], status=j["status"], error=j["error"]))
+                waiting.remove(j)
+        if (not waiting and not todo) or time.time() > deadline:
+            break
+        time.sleep(2.0)
+    for j in todo:
+        j["status"] = "not_submitted"         # still waiting for a free slot: a re-run submits it
+    items = [dict(name=j["name"], model=j["model"], request_id=j.get("request_id"), status=j.get("status"),
+                  files=j.get("files") or [], **({"output": j["output"]} if j.get("output") else {}),
+                  **({"error": j["error"]} if j.get("error") else {}),
+                  **({"reused": True} if j["prev"] else {})) for j in jobs]
+    return dict(items=items, pending=[i["request_id"] for i in items if i["status"] in ("queued", "running")],
+                not_submitted=[i["name"] for i in items if i["status"] == "not_submitted"], estimate=est)
 
 
 # --------------------------------------------------------------------------- catalog
@@ -432,6 +624,30 @@ def cmd(args):
     if r == "upload":
         print(upload(args.file))
         return
+    if r == "estimate":
+        items = []
+        for it in args.items:
+            if it.endswith(".json") and Path(it).is_file():
+                items += [{"model": j["model"]} for j in plan_jobs(json.loads(Path(it).read_text()))]
+                continue
+            model_id, _, count = it.partition(":")
+            if count and not count.isdigit():
+                die(f"bad item {it!r}: use model or model:count")
+            items.append({"model": model_id, "n": int(count or 1)})
+        est = estimate(items)
+        for row in est["items"]:
+            print(f"{row['model']:46} x{row['n']:<4} about {row['starting_cents']:>5}¢   at most {row['max_cents']:>6}¢")
+        print(f"total: about {est['starting_cents']}¢, at most {est['max_cents']}¢ (failed jobs cost nothing)")
+        return
+    if r == "batch":
+        res = batch(json.loads(Path(args.plan).read_text()), out, args.max_cents, args.timeout, args.fresh)
+        for i in res["items"]:
+            detail = ", ".join(i["files"]) or i.get("error") or i["request_id"] or ""
+            print(f"{i['status'] or '?':15} {i['name']:28} {detail}")
+        if res["pending"] or res["not_submitted"]:
+            print(f"{len(res['pending'])} still running and {len(res['not_submitted'])} not started yet: run the same "
+                  "command again to continue (nothing is paid twice)")
+        return
     if r == "run":
         generate(args.model_id, _kv(args.params), out, args.name or args.model_id.split("/")[-1])
         return
@@ -443,6 +659,18 @@ def cmd(args):
         prompt = f"{args.prompt}. {SPRITE_STYLE}"
         inp = dict(prompt=prompt, background="transparent", quality=args.quality, resolution=args.res, aspect_ratio=args.aspect)
         _repeat(args.n, model or MODELS["sprite"], {**inp, **extra}, out, _name(args, args.prompt))
+    elif r == "item":
+        inp = dict(prompt=args.prompt, style=args.style, size=args.size, colors=args.colors, orientation=args.orientation,
+                   outline=False if args.no_outline else None, image_url=args.ref)
+        _repeat(args.n, model or MODELS["item"], {**inp, **extra}, out, _name(args, args.prompt))
+    elif r == "block":
+        if args.block and not re.fullmatch(r"[a-z0-9_]{1,40}", args.block):
+            die("--block may use only a-z, 0-9 and _ (at most 40 characters)")
+        if not re.fullmatch(r"[a-z0-9_.-]{1,40}", args.namespace):
+            die("--namespace may use only a-z, 0-9, _, . and - (at most 40 characters)")
+        inp = dict(prompt=args.prompt, faces=args.faces, resolution=args.res, colors=args.colors, name=args.block,
+                   namespace=args.namespace, image_url=args.ref)
+        generate(model or MODELS["block"], {**inp, **extra}, out, args.name or args.block or _name(args, args.prompt))
     elif r == "edit":
         inp = dict(prompt=args.prompt, image_urls=args.ref, aspect_ratio=args.aspect, resolution=args.res)
         _repeat(args.n, model or MODELS["edit"], {**inp, **extra}, out, _name(args, args.prompt))
@@ -533,6 +761,20 @@ def cmd(args):
         generate(model or MODELS["video-rmbg"], {**inp, **extra}, out, args.name or _stem(args.video, "_cut"))
 
 
+def _bounded(lo: int, hi: int):
+    """argparse type: a whole number from lo to hi (the model's own limits, checked before anything is spent)."""
+    def parse(value: str) -> int:
+        import argparse
+        try:
+            n = int(value)
+        except ValueError:
+            raise argparse.ArgumentTypeError("expected a whole number") from None
+        if not lo <= n <= hi:
+            raise argparse.ArgumentTypeError(f"must be from {lo} to {hi}")
+        return n
+    return parse
+
+
 def register(sub):
     p = sub.add_parser("fixedseed", aliases=["fs"], help="generate assets with FixedSeed (sprites, textures, PBR, 3D, rigs, SFX, music, voice, video)",
                        description=__doc__, formatter_class=__import__("argparse").RawDescriptionHelpFormatter)
@@ -559,6 +801,28 @@ def register(sub):
     q.add_argument("--res", default="1K", choices=["1K", "2K", "4K"])
     q.add_argument("--aspect", default="1:1")
     q.add_argument("--n", type=int, default=1)
+    q = recipe("item", "game item sprite as true pixel art: exact grid, small palette, outline (Terraria 2x or plain)",
+               "prompt")
+    q.add_argument("--style", default="terraria", choices=["terraria", "pixel"],
+                   help="terraria: 2x2 PNG pixels per art pixel, the way Terraria draws items; pixel: plain 1:1")
+    q.add_argument("--size", type=_bounded(8, 64), help="about how many art pixels the longest side has (default: "
+                                                        "24 terraria, 48 pixel)")
+    q.add_argument("--colors", type=_bounded(4, 32), default=16, help="most colours, outline included")
+    q.add_argument("--orientation", default="auto", choices=["auto", "diagonal", "horizontal", "upright"],
+                   help="diagonal swords/tools, horizontal guns/bows, upright potions/materials")
+    q.add_argument("--no-outline", action="store_true", help="no dark outline around the silhouette")
+    q.add_argument("--ref", help="a sketch, concept art or photo of the item to redraw (path or URL)")
+    q.add_argument("--n", type=int, default=1)
+    q = recipe("block", "voxel block textures (16/32 px, seamless) with Minecraft model, blockstate and item files",
+               "prompt")
+    q.add_argument("--faces", default="all", choices=["all", "column", "top_bottom"],
+                   help="all: one texture; column: side + end (logs); top_bottom: top, side, bottom (grass-like)")
+    q.add_argument("--res", type=int, default=16, choices=[16, 32])
+    q.add_argument("--colors", type=_bounded(4, 32), default=12, help="most colours across all faces")
+    q.add_argument("--block", help="block id for the file names (a-z, 0-9, _; default: from the prompt)")
+    q.add_argument("--namespace", default="minecraft", help="your mod id, or minecraft to retexture the vanilla block "
+                                                            "named --block")
+    q.add_argument("--ref", help="a photo or picture of the material (path or URL)")
     q = recipe("edit", "edit / make variants of reference images (consistent sets, animation frames)", "prompt")
     q.add_argument("--ref", action="append", required=True, help="reference image (path or URL), repeatable; @Image1.. in the prompt")
     q.add_argument("--aspect", default="auto")
@@ -647,6 +911,13 @@ def register(sub):
     recipe("schema", "input fields of a model", "model_id", out=False)
     recipe("price", "pricing of a model", "model_id", out=False)
     recipe("balance", "API wallet balance", out=False)
+    q = recipe("estimate", "what a plan would cost: model[:count] ... or a batch plan .json (public prices, no key)",
+               out=False)
+    q.add_argument("items", nargs="+", metavar="model[:count]|plan.json")
+    q = recipe("batch", "run a plan of requests at once with a spend cap; running it again resumes", "plan")
+    q.add_argument("--max-cents", type=int, help="refuse new requests that could cost more than this many US cents")
+    q.add_argument("--timeout", type=float, default=1800, help="seconds to wait for results (the rest keep running)")
+    q.add_argument("--fresh", action="store_true", help="submit again instead of collecting the last hour's requests")
     q = recipe("result", "fetch (and download) a finished request", "request_id")
     recipe("upload", "upload a local file, print its URL", "file", out=False)
     recipe("mcp", "run the FixedSeed MCP server on stdio (for agents without the CLI)", out=False)

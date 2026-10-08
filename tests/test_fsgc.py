@@ -190,7 +190,8 @@ def test_mcp_handshake_and_tool_list():
     assert init["result"]["protocolVersion"] == "2025-06-18" and init["result"]["serverInfo"]["name"] == "fixedseed"
     assert fixedseed_mcp.handle({"jsonrpc": "2.0", "method": "notifications/initialized"}) is None
     names = {t["name"] for t in fixedseed_mcp.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})["result"]["tools"]}
-    assert names == {"search_models", "get_model", "upload_file", "generate", "get_request", "get_balance", "passthrough"}
+    assert names == {"search_models", "get_model", "upload_file", "estimate", "generate", "generate_batch", "get_request",
+                     "get_balance", "passthrough"}
 
 
 # --------------------------------------------------------------------------- publish

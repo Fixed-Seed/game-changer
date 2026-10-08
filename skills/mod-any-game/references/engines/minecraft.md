@@ -12,6 +12,9 @@
   and produces readable sources: `./gradlew genSources`.
 - **Content:** register items, blocks, entities and sounds through the registries. Assets go under
   `src/main/resources/assets/<modid>/` (textures 16x16 PNG, models JSON, lang JSON, sounds.json + ogg).
+  `fsgc fixedseed block "<material>" --namespace <modid> [--faces column|top_bottom]` returns seamless 16x16
+  face textures plus the block model, blockstate and item JSON in exactly that layout: copy its `assets/` into
+  `src/main/resources/` and register the block.
   Data (recipes, loot tables, tags) goes under `data/<modid>/`.
 - **Server-side only:** plugins (Paper/Spigot) plus resource packs change a lot without client mods. The
   "Black Ops 2 inside vanilla Minecraft" demo was a plugin plus a resource pack.

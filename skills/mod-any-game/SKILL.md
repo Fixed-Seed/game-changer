@@ -108,7 +108,11 @@ exactly what the engine loads.
 - **Consistency across many angles and frames:** generate one concept, turn it into 3D
   (`fsgc fixedseed model3d`), then render every heading from the game's camera (`fsgc render3d --preset aoe2`).
 - **Pixel-art games:** generate on a flat background or with transparency, cut out, then do one
-  nearest-neighbour fit to the frame size.
+  nearest-neighbour fit to the frame size. Ready-made recipes: `fsgc fixedseed item` (a game item as true
+  pixel art, Terraria's 2x style or plain) and `fsgc fixedseed block` (Minecraft block textures with their
+  model files).
+- **Before spending:** `fsgc fixedseed estimate` prices a plan; `fsgc fixedseed batch plan.json --max-cents N`
+  (MCP `generate_batch`) makes every asset at once under a cap, and running it again resumes.
 
 ### 7. Verify in the real game (build an oracle)
 The running game is the oracle; your reading of the code is not.

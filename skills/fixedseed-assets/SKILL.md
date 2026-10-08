@@ -14,6 +14,9 @@ angles, a tileable floor, a laser sound, boss music, a voiced line.
   wallet at https://fixedseed.com/developers/billing). `fsgc fixedseed` also reads it from a `.env` file
   (`FIXEDSEED_KEY=...`) in the working folder. Never write the key into mod files; `fsgc publish check` flags
   leaked keys. `fsgc fixedseed balance` shows the wallet.
+- **A key for the agent.** Suggest the user gives the agent its own key with a spend limit (monthly or
+  lifetime, set when creating the key at https://fixedseed.com/developers/keys). The API stops that key at
+  its limit whatever the agent does, so a runaway loop can't drain the wallet.
 - **MCP.** The FixedSeed MCP server ships with this repo: `fsgc fixedseed mcp` (stdio, stdlib only). It reads
   `FIXEDSEED_KEY` (and optionally `FIXEDSEED_API`, default `https://run.fixedseed.com`) from the environment.
   It's pre-configured for each agent:
@@ -29,9 +32,11 @@ angles, a tileable floor, a laser sound, boss music, a voiced line.
     `args = ["fixedseed", "mcp"]` and `env_vars = ["FIXEDSEED_KEY"]`
   - anything else: a stdio server whose command is `bin/fsgc fixedseed mcp`.
 
-  MCP tools: `search_models`, `get_model` (input schema, example, price), `upload_file`, `generate` (queue,
-  wait, download into `out_dir`, manifest line), `get_request` (finish a long job), `get_balance`. The same
-  server has a `passthrough` tool and prompt for running two games at once (see the mashup-mods skill).
+  MCP tools: `search_models`, `get_model` (input schema, example, price), `upload_file`, `estimate` (what a
+  plan costs), `generate` (queue, wait, download into `out_dir`, manifest line, previews),
+  `generate_batch` (many at once under a `max_cents` cap), `get_request` (finish a long job),
+  `get_balance`. The same server has a `passthrough` tool and prompt for running two games at once (see the
+  mashup-mods skill).
 - **Plain HTTP** works too: `https://run.fixedseed.com/v1/llms.txt` documents every endpoint and model with
   current prices, and `/v1/openapi.yaml` is the contract.
 
@@ -45,11 +50,23 @@ angles, a tileable floor, a laser sound, boss music, a voiced line.
   inputs and request id to `<out>/fixedseed_manifest.jsonl`, so every asset can be traced and regenerated.
 - **Long jobs** (video, 3D, long music): MCP `generate` with `wait: false` (or let it time out) returns a
   `request_id`; collect it with `get_request` or `fsgc fixedseed result <request_id>`.
+- **Retries never pay twice:** MCP `generate` and `generate_batch` (and `fsgc fixedseed batch`) record every
+  request in `<out>/.fixedseed_ledger.jsonl`. Asking again for the same model, input and name within an
+  hour (after a timeout, a crash, a dropped connection) collects the earlier request. For a new variation,
+  change the name or pass `fresh: true` (`--fresh`). A result never replaces an earlier file.
+- **Many assets at once** (every item of a mod, a set of sounds): MCP `generate_batch` with `max_cents`, or
+  `fsgc fixedseed batch plan.json --max-cents 300` with a plan of `{"model", "input", "name"}` jobs. New
+  requests over the cap are refused before anything is spent; whatever is still running comes back as
+  pending, and running the same batch again collects it.
+- **Look at what came back:** MCP results carry small previews (sprites enlarged with hard edges, an
+  archive's `preview.png`, video keyframes, audio waveforms). Check them before building on a result.
 
 ## Recipes (`fsgc fixedseed <recipe> --help` for options; `fsgc fs` is the same; `--model` overrides the model; `--set k=v` passes extra inputs)
 
 | Asset | Command | Default model |
 |---|---|---|
+| Game item as true pixel art: exact grid, small palette, outline; Terraria's 2x style or plain | `fsgc fixedseed item "<the item>" [--style pixel] [--size 24] [--orientation diagonal]` | `fixedseed/item-sprite` (transparent PNG) |
+| Voxel block: seamless 16/32 px face textures + Minecraft model, blockstate and item files | `fsgc fixedseed block "<material>" --namespace <modid> [--faces column\|top_bottom] [--block id]` | `fixedseed/block-texture` (ZIP, unpacked with its `assets/` tree and `preview.png`) |
 | Sprite / icon, transparent background | `fsgc fixedseed sprite "<subject, view, style>" --name x` | `openai/gpt-image-2.5-sunburst` (`background=transparent`) |
 | Concept art, key art, backgrounds | `fsgc fixedseed image "<prompt>" --aspect 16:9` | `google/nano-banana-2` |
 | Consistent variants, extra frames, recolors, same character new pose | `fsgc fixedseed edit "<change>" --ref base.png` | `google/nano-banana-2` (`image_urls`) |
@@ -135,8 +152,9 @@ Other useful models (`fsgc fixedseed schema <model>` for inputs):
 
 ## Cost and etiquette
 - **Price the expensive stuff:** every model lists `starting_charge_cents` and `maximum_charge_cents`
-  (`fsgc fixedseed price <model>` / MCP `get_model`). Before batching 3D, video or long music, and for more
-  than about 20 generations, tell the user the rough cost first. Failed requests are not charged.
+  (`fsgc fixedseed price <model>` / MCP `get_model`). Before 3D, video, long music or any batch, run
+  `fsgc fixedseed estimate model[:count] ...` (MCP `estimate`) and tell the user the range; ask before
+  spending more than about $5. Failed requests are not charged.
 - **Iterate cheap:** use low quality or resolution while exploring (`--quality low`, `--res 512` / `1K`),
   then re-run the winners at full quality with the same prompt (and seed where the model takes one).
 - **Reproducibility:** keep `fixedseed_manifest.jsonl` with the assets; it records prompts, inputs and

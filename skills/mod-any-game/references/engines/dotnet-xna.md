@@ -21,7 +21,9 @@
   - `ModCommand` (chat commands, great for testing: `/arsenal`);
   - `GlobalNPC` / `GlobalItem` change vanilla content.
 - **Art:** PNGs next to the class (`Texture => "Mod/Assets/Name"`). NPC sheets are vertical strips, with
-  frame height = texture height / `npcFrameCount`.
+  frame height = texture height / `npcFrameCount`. `fsgc fixedseed item "<the item>"` draws an item the way
+  Terraria does (every art pixel 2x2, a small palette, a dark outline, swords diagonal and guns facing right)
+  and returns the PNG to drop in as it is.
 - **Lab:** `-tmlsavedirectory <dir>` isolates saves; `-skipselect Player:World` loads straight in.
   `Main.instance.InactiveSleepTime = TimeSpan.Zero` keeps full speed unfocused.
 - **Hooks into vanilla methods:** `On_Main.DoUpdate += ...` (detours) and `IL_*` (IL edits) via MonoMod,

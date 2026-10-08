@@ -40,7 +40,8 @@ uv tool install git+https://github.com/Fixed-Seed/game-changer     # or: pipx in
 ```
 **For assets,** get a [FixedSeed API key](https://fixedseed.com/developers/keys) and top up the API wallet
 ([billing](https://fixedseed.com/developers/billing)). It powers both the bundled FixedSeed MCP server
-(`fsgc fixedseed mcp`, stdio) and `fsgc fixedseed`:
+(`fsgc fixedseed mcp`, stdio) and `fsgc fixedseed`. Give your agent its own key with a spend limit (you set
+it when you create the key); the API stops that key at its limit, whatever the agent does:
 ```bash
 export FIXEDSEED_KEY=...
 ```
@@ -51,6 +52,8 @@ Windows games are driven natively or from WSL.
 > Mod Terraria: add a homing missile launcher and a tactical nuke that craters the world. Make the sprites with FixedSeed.
 
 > Give Terraria the Needler from Halo: pink crystal shots that home in on enemies and burst after a few hits.
+
+> Make five new Terraria weapons as pixel-art sprites, and keep the art under a dollar.
 
 > Make a new civilization for Age of Empires II with a unique unit rendered from 3D.
 
@@ -129,7 +132,7 @@ players, and an honest status and verification.
 |---|---|
 | `fsgc scan` | Find Steam/Epic/Xbox installs; fingerprint engine and version, .NET vs native, anti-cheat, installed loaders, save folders, ranked routes |
 | `fsgc passthrough` | Two games at once. `plan` picks the host, lists each engine's hooks, the link contract, milestones with proofs and prior notes (`--out` starts PLAN.md and MODLOG.md); `peer` stands in for either side of the link and checks every message the other side sends. Also an MCP tool and prompt |
-| `fsgc fixedseed` (`fsgc fs`) | `sprite`, `image`, `edit`, `rmbg`, `upscale`, `texture`, `pbr`, `maps`, `model3d`, `remesh`, `retexture`, `rig`, `motion`, `vector`, `sfx`, `music`, `voice`, `video`, `video-rmbg`, `run`, `search`, `schema`, `price`, `balance`, `result`, `upload`, `mcp`. Plain REST against the FixedSeed API, with a manifest of every generation; `mcp` serves the same tools to agents |
+| `fsgc fixedseed` (`fsgc fs`) | `item` (true pixel-art items), `block` (Minecraft block textures + model files), `sprite`, `image`, `edit`, `rmbg`, `upscale`, `texture`, `pbr`, `maps`, `model3d`, `remesh`, `retexture`, `rig`, `motion`, `vector`, `sfx`, `music`, `voice`, `video`, `video-rmbg`, `run`, `search`, `schema`, `price`, `estimate`, `batch`, `balance`, `result`, `upload`, `mcp`. Plain REST against the FixedSeed API, with a manifest of every generation; `mcp` serves the same tools to agents |
 | `fsgc sprite` | `cutout`, `fit`, `pixelate`, `palette`, `sheet`, `slice`, `frames`, `team-mask`, `seamless`, `preview` |
 | `fsgc render3d` | GLB → sprite frames from the game's camera (`aoe2`, `iso8`, `trueiso`, `topdown`, `side`, `turntable`) with Blender |
 | `fsgc win` | `shot`, `record` (gfxcapture + process-loopback audio), `drive` (input that only reaches the game), `ps`, `kill`, `launch`, `reg` |
