@@ -10,7 +10,9 @@ results come back with absolute paths and small previews the agent can see (imag
 keyframes, an audio waveform). Long jobs come back as a request_id to finish with get_request. generate and
 generate_batch keep a ledger in out_dir, so asking again for the same model, input and name within an hour (a client
 that timed out, a retry) collects the earlier request instead of paying twice; generate_batch also refuses a plan
-whose maximum cost is over its max_cents. `passthrough` plans two games running at once, one drawn inside the other (`fsgc
+whose maximum cost is over its max_cents. An account runs its plan's number of requests at once: generate waits up to
+45 s for a free slot and generate_batch starts the rest as slots free up. A request the API refuses (that limit, the
+wallet, the key's spending limit) is never charged; the tool error names the limit with its numbers. `passthrough` plans two games running at once, one drawn inside the other (`fsgc
 passthrough plan`; no key needed), and the `passthrough` prompt hands an agent that plan as a ready instruction:
 clients that support MCP prompts show it as a slash command. Newline-delimited JSON-RPC 2.0, stdlib only; stdout
 carries protocol messages only.
@@ -64,7 +66,10 @@ TOOLS = [
                      "absolute file paths and shows small previews. If the job outlasts timeout_seconds the result is a "
                      "request_id: call get_request later, or call generate again with the same model, input and name, "
                      "which collects that request instead of paying again (within an hour). For a new variation of "
-                     "the same request, give a new name or fresh: true.",
+                     "the same request, give a new name or fresh: true. An account runs only its plan's number of "
+                     "requests at once: when all are in use generate waits up to 45 s for one, then fails with the "
+                     "plan, the limit and how many are running. A request the API refuses (that limit, the wallet, "
+                     "the key's spending limit) is never charged, and the error gives the numbers.",
          inputSchema={"type": "object", "required": ["model", "input"], "properties": {
              "model": {"type": "string", "description": "e.g. fixedseed/item-sprite, openai/gpt-image-2.5-sunburst"},
              "input": {"type": "object", "description": "model input, per get_model's input_schema"},
@@ -76,10 +81,12 @@ TOOLS = [
              "max_cents": {"type": "integer", "description": "refuse if the model's maximum charge is over this (US cents)"}}}),
     dict(name="generate_batch",
          description="Run several requests at once (every sprite for a mod, a set of sound effects) under a spend cap: new "
-                     "requests are refused when their maximum cost adds up to more than max_cents. Files download into "
-                     "out_dir as each finishes. Whatever is still running after timeout_seconds comes back as pending; "
-                     "call generate_batch again with the same jobs to collect it: requests from the last hour with the "
-                     "same model, input and name are collected, never paid twice.",
+                     "requests are refused when their maximum cost adds up to more than max_cents. The account runs "
+                     "its plan's number of requests at once, so the rest start as slots free up. Files download into "
+                     "out_dir as each finishes. Whatever is still running after timeout_seconds comes back as pending, "
+                     "and what hasn't started as not_submitted, with `refused` saying which limit (and its numbers) "
+                     "held it back; those are not charged. Call generate_batch again with the same jobs to continue: "
+                     "requests from the last hour with the same model, input and name are collected, never paid twice.",
          inputSchema={"type": "object", "required": ["jobs", "max_cents"], "properties": {
              "jobs": {"type": "array", "minItems": 1, "maxItems": 50, "items": {
                  "type": "object", "required": ["model", "input"], "properties": {
@@ -129,20 +136,33 @@ def _absolute(value: dict) -> dict:
     return value
 
 
+SLOT_WAIT = 45   # seconds generate waits for a free slot before reporting the account's limit
+
+
+class ToolError(Exception):
+    """A tool failure whose message is the whole answer (no exception name in front)."""
+
+
 def _generate(a: dict) -> dict:
     model, out = a["model"], a.get("out_dir") or "assets/gen"
     name = a.get("name") or model.split("/")[-1]
     timeout = int(a.get("timeout_seconds") or 600) if a.get("wait") is not False else 0
     res = fs.batch([dict(model=model, input=a.get("input") or {}, name=name)], out, a.get("max_cents"),
-                   timeout=timeout, fresh=bool(a.get("fresh")), quiet=True)
+                   timeout=timeout, fresh=bool(a.get("fresh")), quiet=True, slot_wait=SLOT_WAIT)
     item = res["items"][0]
+    if item["status"] == "not_submitted":
+        refused, waited = res["refused"], min(SLOT_WAIT, timeout)
+        busy = refused["type"] == "too_many_active_requests" and waited
+        raise ToolError(refused["message"] + (f" Waited {waited}s for a free slot." if busy else ""))
     if item["status"] in ("failed", "canceled"):
-        raise RuntimeError(f"{model} {item['status']}: {item.get('error')} (request {item['request_id']})")
+        raise ToolError(f"{model} {item['status']}: {item.get('error')} (request {item['request_id']}). Failed "
+                        "requests are not charged.")
     if item["status"] == "download_failed":
-        raise RuntimeError(f"{model} succeeded (request {item['request_id']}) but its files didn't download: "
-                           f"{item.get('error')}. Call get_request with this id to collect them; don't generate again.")
-    if item["status"] != "succeeded":
-        item["note"] = "still running: call get_request with this id later, or generate again with the same input and name"
+        raise ToolError(f"{model} succeeded (request {item['request_id']}) but its files didn't download: "
+                        f"{item.get('error')}. Call get_request with this id to collect them; don't generate again.")
+    if item["status"] in ("queued", "running"):
+        item["note"] = (f"still {item['status']}: call get_request with this request_id later, or generate again "
+                        "with the same model, input and name to collect it (never paid twice)")
     return _absolute(item)
 
 
@@ -151,9 +171,15 @@ def _generate_batch(a: dict) -> dict:
         raise ValueError("max_cents is required: the most the new requests may cost, in US cents")
     res = fs.batch(a.get("jobs") or [], a.get("out_dir") or "assets/gen", a["max_cents"],
                    timeout=int(a.get("timeout_seconds") or 50), fresh=bool(a.get("fresh")), quiet=True)
-    if res["pending"] or res["not_submitted"]:
-        res["note"] = ("some requests are still running or waiting for a free slot (the plan allows only so many at "
-                       "once): call generate_batch again with the same jobs to continue; nothing is paid twice")
+    notes = []
+    if res["not_submitted"]:
+        notes.append(f"{len(res['not_submitted'])} not started and not charged; `refused` says which limit held them back.")
+    if res["pending"]:
+        notes.append(f"{len(res['pending'])} still running.")
+    if notes:
+        notes.append("Call generate_batch again with the same jobs to continue: finished requests are collected, "
+                     "never paid twice.")
+        res["note"] = " ".join(notes)
     return _absolute(res)
 
 
@@ -351,7 +377,7 @@ def call_tool(name: str, args: dict) -> dict:
     try:
         with contextlib.redirect_stderr(err), contextlib.redirect_stdout(err):
             value = HANDLERS[name](args or {})
-        text = value if isinstance(value, str) else json.dumps(value, indent=2, default=str)
+        text = value if isinstance(value, str) else json.dumps(value, indent=2, default=str, ensure_ascii=False)
         content = [dict(type="text", text=text)]
         if name in PREVIEW_TOOLS:
             content += previews(_result_files(value))
@@ -359,6 +385,8 @@ def call_tool(name: str, args: dict) -> dict:
     except SystemExit:
         msg = err.getvalue().strip().splitlines()
         return dict(content=[dict(type="text", text=(msg[-1] if msg else "failed").removeprefix("fsgc: "))], isError=True)
+    except (ToolError, fs.Refused) as e:
+        return dict(content=[dict(type="text", text=str(e))], isError=True)
     except Exception as e:  # noqa: BLE001 - a tool error must not kill the server
         traceback.print_exc(file=sys.stderr)
         return dict(content=[dict(type="text", text=f"{type(e).__name__}: {e}")], isError=True)
@@ -374,7 +402,11 @@ def handle(msg: dict) -> dict | None:
                       capabilities={"tools": {}, "prompts": {}},
                       serverInfo={"name": "fixedseed", "version": __version__},
                       instructions="FixedSeed generation for game assets: search_models -> get_model -> generate. "
-                                   "Outputs land in out_dir with a fixedseed_manifest.jsonl line each. To put one "
+                                   "Outputs land in out_dir with a fixedseed_manifest.jsonl line each. The account "
+                                   "runs its plan's number of requests at once, so for many assets use one "
+                                   "generate_batch, which starts the rest as slots free up, rather than parallel "
+                                   "generate calls. A refused request (that limit, the wallet, the key's spending "
+                                   "limit) is never charged, and its error gives the numbers to plan with. To put one "
                                    "game inside another, the passthrough tool (or prompt) plans it: host and guest, "
                                    "hooks, the link and milestones.")
     elif method == "tools/list":

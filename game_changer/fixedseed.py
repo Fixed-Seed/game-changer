@@ -31,7 +31,9 @@
 `fsgc fs ...` is the same command. Every call appends a line to <out>/fixedseed_manifest.jsonl (model, inputs,
 request id, files) so an asset can be traced and regenerated, and a result never replaces an earlier file. Batches
 (and the MCP's generate) also keep <out>/.fixedseed_ledger.jsonl: asking again for the same model, input and name
-within an hour collects the earlier request instead of paying for a new one. Local files passed as inputs are uploaded through
+within an hour collects the earlier request instead of paying for a new one. A request the API refuses (the plan's
+limit of simultaneous requests, the wallet, the key's spending limit) is never charged, and the error gives that
+limit's numbers; one request waits up to a minute for a free slot, a batch until its timeout. Local files passed as inputs are uploaded through
 /v1/files first. Multi-file results (rigs, PBR sets, motion, SVG, alpha video) arrive as a ZIP and are unpacked
 into <out>/<name>/. The catalog changes: `fsgc fixedseed search` (or the MCP's search_models) lists what is live.
 Base URL: FIXEDSEED_API (default https://run.fixedseed.com). Keys: https://fixedseed.com/developers/keys.
@@ -110,11 +112,75 @@ def fixedseed_key() -> str:
     return k
 
 
-def _req(method: str, path: str, body=None, headers=None, auth=True, raw=False, timeout=120, ok=(200, 201, 202),
-         busy_ok=False):
+REFUSALS = ("too_many_active_requests", "insufficient_credits", "key_spend_limit_reached")
+
+
+class Refused(Exception):
+    """The API didn't queue a request: the account's simultaneous-request limit (AccountBusy), the wallet, or the
+    key's spending limit. It checks all three before it reserves anything, so a refused request is never charged.
+    str() names the limit with its numbers, in one line an agent can plan from; .err is the API's error object."""
+
+    def __init__(self, model: str, kind: str, err: dict):
+        self.model, self.kind, self.err = model, kind, err
+        super().__init__(refusal(model, kind, err))
+
+
+class AccountBusy(Refused):
+    """429 too_many_active_requests: the plan's limit of simultaneous requests is already queued or running on the
+    account. Send the same request (same Idempotency-Key) again once one of them finishes."""
+
+
+def _api_error(body: str) -> dict:
+    """The API's error object ({"error": {"type", "message", ...details}}), or {} for a body that isn't one."""
+    try:
+        err = json.loads(body).get("error")
+    except (ValueError, AttributeError):
+        return {}
+    return err if isinstance(err, dict) else {}
+
+
+def _quietly(fn):
+    """fn()'s value, or None when it fails: optional detail for an error message must never replace the error."""
+    import contextlib
+    import io
+
+    try:
+        with contextlib.redirect_stderr(io.StringIO()):
+            return fn()
+    except (SystemExit, Exception):  # noqa: BLE001
+        return None
+
+
+def refusal(model: str, kind: str, err: dict) -> str:
+    """Why the API refused to queue a request, with the numbers to plan around."""
+    head = f"{model} was not queued and nothing was charged"
+    if kind == "too_many_active_requests":
+        return (f"{head}: the {err.get('plan')} plan runs {err.get('limit')} requests at once and {err.get('active')} "
+                "are already queued or running on this account (every key and the fixedseed.com site count). Send it "
+                "again when one finishes; MCP generate_batch and `fsgc fixedseed batch` wait for free slots by "
+                "themselves.")
+    if kind == "key_spend_limit_reached":
+        limit, spent = int(err.get("limit_cents") or 0), int(err.get("spent_cents") or 0)
+        window = "a month" if err.get("window") == "month" else "in total"
+        resets = f"; the limit resets at {err['resets_at']}" if err.get("resets_at") else ""
+        return (f"{head}: this API key may spend {limit}¢ {window} and has {spent}¢ committed (holds for running "
+                f"requests included), so {max(0, limit - spent)}¢ is left{resets}. Plan within that, or raise the "
+                "key's limit at https://fixedseed.com/developers/keys.")
+    if kind == "insufficient_credits":
+        have = _quietly(lambda: balance().get("balance_cents"))
+        most = _quietly(lambda: (model_info(model).get("pricing") or {}).get("maximum_charge_cents"))
+        nums = [f"the wallet has {have}¢ spendable" if have is not None else "",
+                f"this model holds up to {most}¢ while it runs and returns what it doesn't use" if most else ""]
+        nums = "; ".join(n for n in nums if n)
+        return (f"{head}: the API wallet can't cover this request's reservation" + (f" ({nums})" if nums else "")
+                + ". Top up at https://fixedseed.com/developers/billing, or pick a cheaper model.")
+    return f"{head}: {err.get('message') or kind}"
+
+
+def _req(method: str, path: str, body=None, headers=None, auth=True, raw=False, timeout=120, ok=(200, 201, 202)):
     """JSON request against the API (path like /v1/models) or an absolute URL. Retries 429/5xx; POSTs carry an
-    Idempotency-Key from the caller, so a retried submit never queues (or charges) twice. busy_ok: return None at
-    once when the account already has its plan's limit of simultaneous requests (429 too_many_active_requests)."""
+    Idempotency-Key from the caller, so a retried submit never queues (or charges) twice. A submission the API
+    refuses raises Refused (AccountBusy when the account is at its plan's limit of simultaneous requests)."""
     url = path if path.startswith("http") else api_base() + path
     h = {"Accept": "application/json", "User-Agent": "game-changer", **(headers or {})}
     if auth:
@@ -131,8 +197,10 @@ def _req(method: str, path: str, body=None, headers=None, auth=True, raw=False, 
                 return payload if raw else (json.loads(payload) if payload else {})
         except urllib.error.HTTPError as e:
             detail = e.read().decode(errors="replace")[:1500]
-            if busy_ok and e.code == 429 and "too_many_active_requests" in detail:
-                return None
+            err = _api_error(detail)
+            model = path.removeprefix("/v1/queue/") if path.startswith("/v1/queue/") else ""
+            if model and err.get("type") in REFUSALS:   # not worth a quick retry: say which limit, with its numbers
+                raise (AccountBusy if err["type"] == "too_many_active_requests" else Refused)(model, err["type"], err)
             if e.code in (429, 500, 502, 503, 504) and attempt < 3:
                 wait = e.headers.get("Retry-After")
                 time.sleep(float(wait) if wait and wait.isdigit() else 2 * (attempt + 1))
@@ -276,10 +344,13 @@ def download_outputs(result, out: Path, name: str) -> list[str]:
 # --------------------------------------------------------------------------- queue
 
 
-def submit(model: str, inp: dict, idempotency_key: str | None = None, busy_ok: bool = False) -> dict | None:
-    """Queue a request. With busy_ok, None means the account is at its plan's limit of simultaneous requests."""
-    return _req("POST", f"/v1/queue/{model}", inp, headers={"Idempotency-Key": idempotency_key or str(uuid.uuid4())},
-                busy_ok=busy_ok)
+SLOT_WAIT = 60   # seconds one request waits for a free slot (the account at its plan's limit) before saying so
+
+
+def submit(model: str, inp: dict, idempotency_key: str | None = None) -> dict:
+    """Queue a request. Raises Refused (AccountBusy at the plan's limit of simultaneous requests); a refused
+    request costs nothing, and sending it again with the same Idempotency-Key is safe."""
+    return _req("POST", f"/v1/queue/{model}", inp, headers={"Idempotency-Key": idempotency_key or str(uuid.uuid4())})
 
 
 def result(request_id: str) -> dict | None:
@@ -297,8 +368,25 @@ def result(request_id: str) -> dict | None:
 
 
 def run(model: str, inp: dict, timeout: float = 1800, quiet: bool = False) -> dict:
-    """Queue, poll (printing status to stderr), return {"request_id", "output"}."""
-    job = submit(model, inp)
+    """Queue (waiting up to SLOT_WAIT seconds for a free slot), poll (printing status to stderr), return
+    {"request_id", "output"}."""
+    key, start, said = str(uuid.uuid4()), time.time(), False
+    while True:
+        try:
+            job = submit(model, inp, key)
+            break
+        except AccountBusy as busy:
+            waited = time.time() - start
+            if waited >= SLOT_WAIT:
+                die(f"{busy} Waited {waited:.0f}s for a free slot.")
+            if not quiet and not said:
+                print(f"  [{model}] {busy.err.get('active')} of the {busy.err.get('plan')} plan's {busy.err.get('limit')} "
+                      f"simultaneous requests are in use; waiting up to {SLOT_WAIT}s for one to finish (nothing is "
+                      "charged while waiting)", file=sys.stderr)
+                said = True
+            time.sleep(min(5.0, SLOT_WAIT - waited))
+        except Refused as e:
+            die(str(e))
     rid = job["request_id"]
     if not quiet:
         print(f"  [{model}] queued as {rid}", file=sys.stderr)
@@ -415,12 +503,14 @@ def estimate(items: list[dict]) -> dict:
 
 
 def batch(jobs: list[dict], out: str | Path, max_cents: int | None = None, timeout: float = 1800,
-          fresh: bool = False, quiet: bool = False) -> dict:
+          fresh: bool = False, quiet: bool = False, slot_wait: float | None = None) -> dict:
     """Run several requests at once. Requests this out/ already holds from the last hour (same model, input and name)
     are collected rather than paid for again, so a batch that timed out or crashed resumes when re-run; fresh=True
     submits everything anew. New requests are priced first and refused if their maximum is over max_cents. Each is
     recorded in the ledger before it is submitted, with the Idempotency-Key it is sent with, so even a crash between
-    the two never queues a second copy. -> {items: [...], pending: [request ids still running], estimate}."""
+    the two never queues a second copy. Requests wait for free slots (a plan runs only so many at once) until timeout,
+    or for slot_wait seconds of no free slot. -> {items: [...], pending: [request ids still running], not_submitted:
+    [names], refused (why those weren't queued: the API's error with a message; never charged), estimate}."""
     out = Path(out)
     jobs = plan_jobs(jobs)
     known, now = ({} if fresh else ledger(out)), time.time()
@@ -451,16 +541,33 @@ def batch(jobs: list[dict], out: str | Path, max_cents: int | None = None, timeo
         todo.append(j)
     waiting = [j for j in jobs if j.get("request_id") and not (j.get("status") == "succeeded" and j.get("files"))]
     deadline = time.time() + timeout
+    stop, busy_since, held = None, None, 0       # the latest refusal; since when no slot has been free; ours in flight
     while True:
-        # Submit while the account has room: a plan allows only so many simultaneous requests (standard: 3), so the
-        # rest wait for one to finish rather than failing.
-        while todo:
+        # Submit while the account has room. A plan runs only so many requests at once, so the rest wait for a free
+        # slot (a refusal costs nothing). When the wallet or the key's spending limit refuses one, the holds of this
+        # batch's running requests are what's in the way: each that settles returns the unused part, so try again.
+        if stop is not None and not isinstance(stop, AccountBusy) and len(waiting) < held:
+            stop = None
+        while todo and (stop is None or isinstance(stop, AccountBusy)):
             j = todo[0]
             if j["resolved"] is None:
                 j["resolved"] = resolve_inputs(j["input"])
-            job = submit(j["model"], j["resolved"], j["idempotency_key"], busy_ok=True)
-            if job is None:
+            try:
+                job = submit(j["model"], j["resolved"], j["idempotency_key"])
+            except AccountBusy as e:
+                if not quiet and busy_since is None:
+                    print(f"  waiting for a free slot: {e.err.get('active')} of the {e.err.get('plan')} plan's "
+                          f"{e.err.get('limit')} simultaneous requests are in use (nothing is charged while waiting)",
+                          file=sys.stderr)
+                stop, busy_since = e, busy_since or time.time()
                 break
+            except Refused as e:
+                if not quiet and (stop is None or stop.kind != e.kind):
+                    print(f"  {e}" + (" Waiting for this batch's running requests to settle." if waiting else ""),
+                          file=sys.stderr)
+                stop, held = e, len(waiting)
+                break
+            stop, busy_since = None, None
             todo.pop(0)
             j.update(request_id=job["request_id"], status=job.get("status") or "queued")
             _ledger_add(out, dict(key=j["key"], request_id=j["request_id"], status=j["status"], input=j["resolved"]))
@@ -485,17 +592,23 @@ def batch(jobs: list[dict], out: str | Path, max_cents: int | None = None, timeo
                 j["error"] = st.get("error") or "no detail"
                 _ledger_add(out, dict(key=j["key"], status=j["status"], error=j["error"]))
                 waiting.remove(j)
-        if (not waiting and not todo) or time.time() > deadline:
+        given_up = bool(todo) and stop is not None and (
+            (not isinstance(stop, AccountBusy) and not waiting and held == 0)
+            or (isinstance(stop, AccountBusy) and slot_wait is not None and time.time() - busy_since >= slot_wait))
+        if (not waiting and (not todo or given_up)) or time.time() > deadline:
             break
         time.sleep(2.0)
     for j in todo:
-        j["status"] = "not_submitted"         # still waiting for a free slot: a re-run submits it
+        j["status"] = "not_submitted"         # refused, never charged: a re-run submits it
     items = [dict(name=j["name"], model=j["model"], request_id=j.get("request_id"), status=j.get("status"),
                   files=j.get("files") or [], **({"output": j["output"]} if j.get("output") else {}),
                   **({"error": j["error"]} if j.get("error") else {}),
                   **({"reused": True} if j["prev"] else {})) for j in jobs]
-    return dict(items=items, pending=[i["request_id"] for i in items if i["status"] in ("queued", "running")],
-                not_submitted=[i["name"] for i in items if i["status"] == "not_submitted"], estimate=est)
+    res = dict(items=items, pending=[i["request_id"] for i in items if i["status"] in ("queued", "running")],
+               not_submitted=[i["name"] for i in items if i["status"] == "not_submitted"], estimate=est)
+    if todo and stop:
+        res["refused"] = {**stop.err, "type": stop.kind, "message": str(stop)}
+    return res
 
 
 # --------------------------------------------------------------------------- catalog
@@ -644,6 +757,8 @@ def cmd(args):
         for i in res["items"]:
             detail = ", ".join(i["files"]) or i.get("error") or i["request_id"] or ""
             print(f"{i['status'] or '?':15} {i['name']:28} {detail}")
+        if res.get("refused"):
+            print(res["refused"]["message"])
         if res["pending"] or res["not_submitted"]:
             print(f"{len(res['pending'])} still running and {len(res['not_submitted'])} not started yet: run the same "
                   "command again to continue (nothing is paid twice)")

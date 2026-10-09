@@ -58,6 +58,15 @@ angles, a tileable floor, a laser sound, boss music, a voiced line.
   `fsgc fixedseed batch plan.json --max-cents 300` with a plan of `{"model", "input", "name"}` jobs. New
   requests over the cap are refused before anything is spent; whatever is still running comes back as
   pending, and running the same batch again collects it.
+- **Limits, and what a refusal costs.** An account runs only its plan's number of requests at once, counting
+  every key and the fixedseed.com site. A key can also have a spending limit, and the wallet must cover each
+  request's hold (its maximum charge, settled to the real cost when it finishes). The API checks all three
+  before it holds anything, so a refused request is never charged, and the error names the limit with its
+  numbers: plan, limit and active; or the key's limit, what it has committed and when it resets; or the
+  balance against the model's maximum. Plan around them:
+  - Send many assets as one batch, not as parallel `generate` calls. The batch starts the rest as slots free up.
+  - A single `generate` (or CLI recipe) waits up to about a minute for a slot, then reports the limit.
+  - Fit the plan to what the key has left.
 - **Look at what came back:** MCP results carry small previews (sprites enlarged with hard edges, an
   archive's `preview.png`, video keyframes, audio waveforms). Check them before building on a result.
 
